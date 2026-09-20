@@ -41,7 +41,7 @@ function defaultSeasonYear() {
 }
 
 function emptyLeague() {
-  return { size: null, teams: [], matches: [], locked: false, calendar: { startYear: defaultSeasonYear(), excluded: [] } };
+  return { size: null, teams: [], matches: [], locked: false, calendar: { startYear: defaultSeasonYear(), excluded: [] }, teamLeaders: [] };
 }
 
 function toIso(d) {
@@ -639,6 +639,12 @@ function PublicView({ data, activeLeagueId, setActiveLeagueId, onPrintLeague }) 
   const league = data.leagues[activeLeagueId];
   const meta = LEAGUES.find((l) => l.id === activeLeagueId);
   const standings = computeStandings(league);
+  const [leadersOpen, setLeadersOpen] = useState(false);
+  const hasLeaders = league.teamLeaders && league.teamLeaders.length > 0;
+
+  useEffect(() => {
+    setLeadersOpen(false);
+  }, [activeLeagueId]);
 
   return (
     <main className="max-w-5xl mx-auto px-4 pt-8 pb-16">
@@ -653,6 +659,32 @@ function PublicView({ data, activeLeagueId, setActiveLeagueId, onPrintLeague }) 
               <Trophy size={16} className="text-amber-600" /> League table
             </h2>
             <StandingsTable rows={standings} />
+
+            {hasLeaders && leadersOpen && (
+              <div className="mt-6">
+                <div className="flex items-center justify-between mb-3">
+                  <h2 className="font-serif text-lg text-emerald-900 flex items-center gap-2">
+                    <Users size={16} className="text-amber-600" /> Team leaders
+                  </h2>
+                  <button onClick={() => setLeadersOpen(false)} aria-label="Close team leaders" className="text-stone-400 hover:text-stone-700 p-1">
+                    <X size={16} />
+                  </button>
+                </div>
+                <div className="space-y-2">
+                  {league.teamLeaders.map((tl, i) => (
+                    <div key={i} className="bg-white border border-stone-200 rounded-lg p-3 flex items-center justify-between text-sm">
+                      <span className="font-serif font-medium text-emerald-900">{tl.name}</span>
+                      <span className="text-stone-600 font-mono">{tl.phone}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {hasLeaders && !leadersOpen && (
+              <button onClick={() => setLeadersOpen(true)} className="mt-4 text-sm text-emerald-800 hover:underline flex items-center gap-1.5">
+                <Users size={14} /> Show team leaders
+              </button>
+            )}
           </section>
           <section>
             <div className="flex items-center justify-between mb-3">
@@ -1049,9 +1081,13 @@ function LeagueSetup({ data, persist, activeLeagueId, setActiveLeagueId, flash, 
   const league = data.leagues[activeLeagueId];
   const meta = LEAGUES.find((l) => l.id === activeLeagueId);
   const [nameDraft, setNameDraft] = useState(league.teams.length ? league.teams : []);
+  const [leadersPasteText, setLeadersPasteText] = useState("");
+  const [leadersPasteErrors, setLeadersPasteErrors] = useState([]);
 
   useEffect(() => {
     setNameDraft(data.leagues[activeLeagueId].teams);
+    setLeadersPasteText("");
+    setLeadersPasteErrors([]);
   }, [activeLeagueId, data]);
 
   const chooseSize = async (size) => {
@@ -1062,6 +1098,7 @@ function LeagueSetup({ data, persist, activeLeagueId, setActiveLeagueId, flash, 
     next.leagues[activeLeagueId] = {
       size, teams: defaultTeams(size), matches: [], locked: false,
       calendar: league.calendar || { startYear: defaultSeasonYear(), excluded: [] },
+      teamLeaders: league.teamLeaders || [],
     };
     await persist(next);
     setNameDraft(defaultTeams(size));
@@ -1073,6 +1110,40 @@ function LeagueSetup({ data, persist, activeLeagueId, setActiveLeagueId, flash, 
     next.leagues[activeLeagueId].teams = nameDraft.map((n, i) => n.trim() || `Team ${i + 1}`);
     await persist(next);
     flash("Team names saved");
+  };
+
+  const loadPastedLeaders = async () => {
+    const lines = leadersPasteText.split("\n").map((l) => l.trim()).filter((l) => l.length > 0);
+    if (lines.length === 0) {
+      setLeadersPasteErrors(["Paste at least one line: Name, Phone number"]);
+      return;
+    }
+    const errors = [];
+    const leaders = [];
+    lines.forEach((line, i) => {
+      const fields = line.includes("\t") ? line.split("\t") : line.split(",");
+      if (fields.length < 2) {
+        errors.push(`Line ${i + 1}: expected "Name, Phone number"`);
+        return;
+      }
+      const name = fields[0].trim();
+      const phone = fields.slice(1).join(",").trim();
+      if (!name || !phone) {
+        errors.push(`Line ${i + 1}: missing a name or phone number`);
+        return;
+      }
+      leaders.push({ name, phone });
+    });
+    if (errors.length > 0) {
+      setLeadersPasteErrors(errors);
+      return;
+    }
+    setLeadersPasteErrors([]);
+    const next = structuredClone(data);
+    next.leagues[activeLeagueId].teamLeaders = leaders;
+    await persist(next);
+    setLeadersPasteText("");
+    flash(`${meta.name}: ${leaders.length} team leader${leaders.length === 1 ? "" : "s"} saved`);
   };
 
   const generate = async () => {
@@ -1184,6 +1255,35 @@ function LeagueSetup({ data, persist, activeLeagueId, setActiveLeagueId, flash, 
               <button onClick={saveNames} className="bg-emerald-800 text-white rounded px-4 py-2 text-sm font-medium hover:bg-emerald-900 flex items-center gap-1.5">
                 <Save size={14} /> Save team names
               </button>
+
+              <h4 className="font-serif text-sm text-stone-600 mb-2 mt-6 flex items-center gap-1.5">
+                <Users size={14} /> Team leaders (bulk upload)
+              </h4>
+              <p className="text-xs text-stone-500 mb-2">
+                One leader per line: <span className="font-mono">Name, Phone number</span>. Replaces the current list for {meta.name}.
+              </p>
+              <textarea
+                value={leadersPasteText}
+                onChange={(e) => setLeadersPasteText(e.target.value)}
+                rows={4}
+                placeholder={"Jane Smith, 07700 900123\nJohn Doe, 07700 900456"}
+                className="w-full border border-stone-300 rounded px-3 py-1.5 text-sm font-mono mb-2"
+              />
+              {leadersPasteErrors.length > 0 && (
+                <ul className="text-xs text-red-600 mb-2 list-disc pl-5">
+                  {leadersPasteErrors.map((e, i) => <li key={i}>{e}</li>)}
+                </ul>
+              )}
+              <button onClick={loadPastedLeaders} className="bg-emerald-800 text-white rounded px-4 py-2 text-sm font-medium hover:bg-emerald-900 flex items-center gap-1.5">
+                <Save size={14} /> Save team leaders
+              </button>
+              {league.teamLeaders && league.teamLeaders.length > 0 && (
+                <div className="mt-3 text-sm text-stone-600 space-y-0.5">
+                  {league.teamLeaders.map((tl, i) => (
+                    <div key={i}>{tl.name} &mdash; {tl.phone}</div>
+                  ))}
+                </div>
+              )}
             </>
           )}
         </section>
